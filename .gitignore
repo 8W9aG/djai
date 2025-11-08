@@ -11,6 +11,9 @@ dist/
 .venv/
 env/
 venv/
+.env
+.djai_session
+.djai_cache/
 .coverage
 coverage.xml
 
