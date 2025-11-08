@@ -1,3 +1,19 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+env/
+venv/
+.coverage
+coverage.xml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
