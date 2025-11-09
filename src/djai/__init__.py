@@ -9,7 +9,7 @@ __all__ = [
     "get_client_credentials_token",
     "exchange_authorization_code",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def greet(name: str) -> str:
