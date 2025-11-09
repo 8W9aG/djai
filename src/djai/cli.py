@@ -15,7 +15,7 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Dict, MutableMapping, Sequence
+from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 from dotenv import load_dotenv
 
@@ -133,10 +133,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         sys.stderr.write("Finished fetching liked tracks.\n")
 
-    indent = None if args.compact else 2
-    json.dump(tracks, sys.stdout, indent=indent)
-    if indent is not None:
-        sys.stdout.write("\n")
+    try:
+        downloaded = _download_audio_previews(
+            tracks,
+            cwd / CACHE_DIRNAME / "audio",
+        )
+    except RuntimeError:
+        return 1
+    sys.stderr.write(f"Downloaded {downloaded} new audio previews.\n")
+
+    sys.stdout.write(f"{len(tracks)}\n")
     return 0
 
 
@@ -304,5 +310,91 @@ def _store_cache(base_path: Path, cache_key: str, tracks: list[Dict[str, Any]]) 
             json.dump({"timestamp": time.time(), "tracks": tracks}, fh, indent=2)
     except OSError:
         pass
+
+
+def _download_audio_previews(
+    tracks: list[Dict[str, Any]],
+    audio_dir: Path,
+) -> int:
+    try:
+        from yt_dlp import YoutubeDL  # type: ignore
+    except ImportError as exc:  # pragma: no cover - runtime guard
+        sys.stderr.write(
+            "yt-dlp is required for audio downloading. "
+            "Install with `pip install djai[dev]` or `pip install yt-dlp`.\n"
+        )
+        raise RuntimeError("yt-dlp is not installed") from exc
+
+    downloaded = 0
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    for track in tracks:
+        track_id = track.get("id") or hashlib.sha256(
+            json.dumps(track, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        target = audio_dir / f"{track_id}.mp3"
+        if target.exists():
+            continue
+        preview_url = track.get("preview_url")
+        if not preview_url:
+            query = _build_search_query(track)
+            if query:
+                preview_url = f"ytsearch1:{query}"
+                track_name = track.get("name", "unknown")
+                sys.stderr.write(
+                    f"No preview for '{track_name}', searching YouTube for '{query}'.\n"
+                )
+            else:
+                track_name = track.get("name", "unknown")
+                sys.stderr.write(
+                    f"Skipping track '{track_name}' without preview or searchable metadata.\n"
+                )
+                continue
+
+        opts = {
+            "format": "bestaudio/best",
+            "quiet": True,
+            "noplaylist": True,
+            "outtmpl": str(target),
+            "overwrites": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+        try:
+            with YoutubeDL(opts) as ydl:
+                ydl.download([preview_url])
+            downloaded += 1
+        except Exception as exc:  # pragma: no cover - defensive
+            sys.stderr.write(
+                f"Failed to download preview for '{track.get('name', track_id)}': {exc}\n"
+            )
+            if target.exists():
+                target.unlink(missing_ok=True)
+
+    return downloaded
+
+
+def _build_search_query(track: Mapping[str, Any]) -> str | None:
+    parts: list[str] = []
+    name = track.get("name")
+    if isinstance(name, str):
+        parts.append(name)
+
+    artists = track.get("artists")
+    if isinstance(artists, list):
+        for artist in artists:
+            if isinstance(artist, Mapping):
+                artist_name = artist.get("name")
+                if isinstance(artist_name, str):
+                    parts.append(artist_name)
+
+    query = " ".join(part.strip() for part in parts if part)
+    return query or None
 
 

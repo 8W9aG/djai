@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, List
 
@@ -15,7 +16,7 @@ def _reject_authorization(*args: object, **kwargs: object) -> None:
     raise AssertionError("initiate_user_authorization should not be called")
 
 
-def test_cli_outputs_tracks_json(
+def test_cli_outputs_track_count(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -24,6 +25,7 @@ def test_cli_outputs_tracks_json(
     monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
     monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "initiate_user_authorization", _reject_authorization)
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
 
     captured: List[Any] = [
         {"id": "t1", "name": "Song", "artists": [{"name": "Artist"}], "album": {"name": "Album"}},
@@ -35,7 +37,7 @@ def test_cli_outputs_tracks_json(
 
     assert exit_code == 0
     out = capsys.readouterr().out.strip()
-    assert json.loads(out) == captured
+    assert out == "1"
 
 
 def test_cli_reads_token_from_env_file(
@@ -52,6 +54,7 @@ def test_cli_reads_token_from_env_file(
         lambda *args, **kwargs: real_load_dotenv(tmp_path / ".env", override=True),
     )
     monkeypatch.setattr(cli, "initiate_user_authorization", _reject_authorization)
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
     monkeypatch.chdir(tmp_path)
     tmp_path.joinpath(".env").write_text('SPOTIFY_API_TOKEN="env-token"\n', encoding="utf-8")
 
@@ -61,7 +64,7 @@ def test_cli_reads_token_from_env_file(
     exit_code = cli.main(["--compact"])
 
     assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == captured
+    assert capsys.readouterr().out.strip() == "1"
 
 
 def test_cli_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -72,6 +75,7 @@ def test_cli_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
     monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "initiate_user_authorization", _reject_authorization)
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
 
     def _fail(*args: object, **kwargs: object) -> None:
         raise AssertionError("fetch_liked_tracks should not be called")
@@ -95,6 +99,7 @@ def test_cli_auto_authorizes_when_missing_token(
         "load_dotenv",
         lambda *args, **kwargs: real_load_dotenv(tmp_path / ".env", override=True),
     )
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
     monkeypatch.chdir(tmp_path)
     tmp_path.joinpath(".env").write_text(
         "SPOTIFY_CLIENT_ID=id\nSPOTIFY_CLIENT_SECRET=secret\n", encoding="utf-8"
@@ -120,7 +125,7 @@ def test_cli_auto_authorizes_when_missing_token(
     exit_code = cli.main(["--compact"])
 
     assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == captured
+    assert capsys.readouterr().out.strip() == "1"
     assert called["token"] == "user-token"
     assert os.environ.get("SPOTIFY_API_TOKEN") == "user-token"
     session_file = tmp_path / ".djai_session"
@@ -169,3 +174,97 @@ def test_cli_uses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
     cli.main(["--compact", "--max-items", "1"])
     assert len(calls) == 2
+
+
+def test_cli_downloads_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import types
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: None)
+    tracks = [
+        {"id": "track1", "name": "Song", "preview_url": "https://example.com/audio.mp3"},
+    ]
+    monkeypatch.setattr(cli, "fetch_liked_tracks", lambda *a, **k: tracks)
+    monkeypatch.delenv("SPOTIFY_API_TOKEN", raising=False)
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(
+        cli,
+        "initiate_user_authorization",
+        lambda *a, **k: {"access_token": "token", "refresh_token": "refresh"},
+    )
+
+    downloads: list[dict[str, Any]] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, params: dict[str, Any]) -> None:
+            self.params = params
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            downloads.append({"params": self.params})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def download(self, urls: list[str]) -> None:
+            downloads[-1]["urls"] = urls
+            Path(self.params["outtmpl"]).write_bytes(b"mp3")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+    assert downloads[0]["urls"] == ["https://example.com/audio.mp3"]
+    audio_file = tmp_path / ".djai_cache" / "audio" / "track1.mp3"
+    assert audio_file.exists()
+
+
+def test_cli_downloads_audio_via_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import types
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: None)
+    tracks = [
+        {
+            "id": "track2",
+            "name": "Diane Young",
+            "artists": [{"name": "Vampire Weekend"}],
+        },
+    ]
+    monkeypatch.setattr(cli, "fetch_liked_tracks", lambda *a, **k: tracks)
+    monkeypatch.delenv("SPOTIFY_API_TOKEN", raising=False)
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(
+        cli,
+        "initiate_user_authorization",
+        lambda *a, **k: {"access_token": "token", "refresh_token": "refresh"},
+    )
+
+    downloads: list[dict[str, Any]] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, params: dict[str, Any]) -> None:
+            self.params = params
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            downloads.append({"params": self.params})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def download(self, urls: list[str]) -> None:
+            downloads[-1]["urls"] = urls
+            Path(self.params["outtmpl"]).write_bytes(b"mp3")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+    assert downloads[0]["urls"] == ["ytsearch1:Diane Young Vampire Weekend"]
+    audio_file = tmp_path / ".djai_cache" / "audio" / "track2.mp3"
+    assert audio_file.exists()

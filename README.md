@@ -16,9 +16,8 @@ Key flags:
 - `--token`: Provide the Spotify token directly (defaults to `SPOTIFY_API_TOKEN`).
 - `--limit`: Batch size per API call (max 50; defaults to 50).
 - `--max-items`: Optional cap on total tracks to fetch.
-- `--compact`: Output a single-line JSON payload instead of pretty-printed JSON.
 
-The CLI calls Spotify's `/v1/me/tracks` endpoint and prints JSON metadata, including artists, album details, duration, popularity, and preview URLs.
+The CLI calls Spotify's `/v1/me/tracks` endpoint, caches responses, downloads MP3 previews via [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (requires `ffmpeg`), falling back to a YouTube search when Spotify doesn't expose a preview URL, and prints the total number of liked tracks retrieved.
 
 ### `.env` Support
 
@@ -30,7 +29,7 @@ SPOTIFY_CLIENT_SECRET="your-client-secret"
 SPOTIFY_API_TOKEN="your-spotify-token"
 ```
 
-The CLI automatically loads `.env` from the current working directory (or parent directories) using [`python-dotenv`](https://github.com/theskumar/python-dotenv). If an explicit API token is missing but client credentials are configured, `djai` launches a one-time Authorization Code flow using a temporary localhost listener to obtain fresh `access_token` and `refresh_token` values before fetching tracks. The resulting tokens are cached in `.djai_session` (ignored by git) so subsequent runs in the same directory reuse them. Note that analysing a user's liked tracks still requires a token granted with the `user-library-read` scope.
+The CLI automatically loads `.env` from the current working directory (or parent directories) using [`python-dotenv`](https://github.com/theskumar/python-dotenv). If an explicit API token is missing but client credentials are configured, `djai` launches a one-time Authorization Code flow using a temporary localhost listener to obtain fresh `access_token` and `refresh_token` values before fetching tracks. The resulting tokens are cached in `.djai_session` (ignored by git) so subsequent runs in the same directory reuse them. Downloaded previews are stored under `.djai_cache/audio`, and API responses are cached under `.djai_cache` for up to 30 days. Note that analysing a user's liked tracks still requires a token granted with the `user-library-read` scope.
 
 ## Development
 
