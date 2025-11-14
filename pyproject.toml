@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "djai"
-version = "0.3.0"
-description = "Utilities for working with Django-based AI integrations."
+version = "0.4.0"
+description = "DJ AI Ideation Tools."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
@@ -25,12 +25,17 @@ dependencies = [
   "requests>=2.31.0",
   "python-dotenv>=1.0.0",
   "yt-dlp>=2024.10.22",
+  "demucs>=4.0.0",
+  "diffq>=0.2.4",
+  "torch>=2.3.0",
+  "torchaudio>=2.3.0",
+  "torchcodec>=0.2.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/djai"
-Repository = "https://github.com/your-org/djai"
-Issues = "https://github.com/your-org/djai/issues"
+Homepage = "https://github.com/8W9aG/djai"
+Repository = "https://github.com/8W9aG/djai"
+Issues = "https://github.com/8W9aG/djai/issues"
 
 [project.optional-dependencies]
 dev = [

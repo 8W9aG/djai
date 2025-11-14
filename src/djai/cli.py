@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -332,8 +334,17 @@ def _download_audio_previews(
         track_id = track.get("id") or hashlib.sha256(
             json.dumps(track, sort_keys=True).encode("utf-8")
         ).hexdigest()[:16]
-        target = audio_dir / f"{track_id}.mp3"
-        if target.exists():
+        stems_dir = audio_dir.parent / "stems" / track_id
+
+        existing_file = _ensure_audio_file(audio_dir, track_id)
+        if existing_file:
+            sys.stderr.write(
+                f"Audio already cached for '{track.get('name', track_id)}'; ensuring stems...\n"
+            )
+            try:
+                _separate_audio_sources(existing_file, stems_dir)
+            except RuntimeError as exc:
+                sys.stderr.write(f"Error separating sources for {track_id}: {exc}\n")
             continue
         preview_url = track.get("preview_url")
         if not preview_url:
@@ -355,7 +366,7 @@ def _download_audio_previews(
             "format": "bestaudio/best",
             "quiet": True,
             "noplaylist": True,
-            "outtmpl": str(target),
+            "outtmpl": str(audio_dir / track_id),
             "overwrites": True,
             "postprocessors": [
                 {
@@ -374,8 +385,26 @@ def _download_audio_previews(
             sys.stderr.write(
                 f"Failed to download preview for '{track.get('name', track_id)}': {exc}\n"
             )
-            if target.exists():
-                target.unlink(missing_ok=True)
+            continue
+
+        target = _ensure_audio_file(audio_dir, track_id)
+        if target is None:
+            sys.stderr.write(
+                f"Failed to locate downloaded audio for '{track.get('name', track_id)}'.\n"
+            )
+            continue
+
+        sys.stderr.write(
+            f"Separating '{track.get('name', track_id)}' with Demucs...\n"
+        )
+        try:
+            _separate_audio_sources(target, stems_dir)
+        except Exception as exc:  # pragma: no cover - defensive
+            sys.stderr.write(
+                f"Error separating sources for '{track.get('name', track_id)}': {exc}\n"
+            )
+            target.unlink(missing_ok=True)
+            continue
 
     return downloaded
 
@@ -396,5 +425,114 @@ def _build_search_query(track: Mapping[str, Any]) -> str | None:
 
     query = " ".join(part.strip() for part in parts if part)
     return query or None
+
+
+def _ensure_audio_file(audio_dir: Path, track_id: str) -> Path | None:
+    target = audio_dir / f"{track_id}.mp3"
+    if target.exists():
+        return target
+
+    for path in audio_dir.glob(f"{track_id}.mp3*"):
+        if not path.is_file():
+            continue
+        if path == target:
+            return target
+        if target.exists():
+            target.unlink()
+        path.rename(target)
+        return target
+
+    return None
+
+
+def _separate_audio_sources(audio_file: Path, stems_dir: Path) -> None:
+    if _stems_exist(stems_dir):
+        return
+
+    try:
+        import diffq  # type: ignore  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "demucs requires the `diffq` package. Install it with `pip install diffq`."
+        ) from exc
+
+    stems_dir.parent.mkdir(parents=True, exist_ok=True)
+    if stems_dir.exists():
+        shutil.rmtree(stems_dir)
+
+    if not audio_file.exists():
+        raise RuntimeError(f"expected audio file at {audio_file} but it was not found.")
+
+    cmd = [
+        "demucs",
+        "-n",
+        "htdemucs",
+        "--out",
+        str(stems_dir.parent),
+        "--filename",
+        f"{stems_dir.name}/{{stem}}.wav",
+        audio_file.name,
+    ]
+
+    sys.stderr.write(
+        f"Running Demucs (mdx_extra_q) for '{audio_file.stem}'...\n"
+    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=str(audio_file.parent),
+        )
+    except FileNotFoundError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "demucs CLI not found. Install demucs to enable separation."
+        ) from exc
+    except subprocess.CalledProcessError as exc:  # pragma: no cover
+        raise RuntimeError(
+            f"demucs failed:\nstdout:\n{exc.stdout}\nstderr:\n{exc.stderr}"
+        ) from exc
+        if "Selected model is a bag" in (result.stdout or ""):
+            sys.stderr.write("Demucs is downloading large model weights, please wait...\n")
+
+    produced_files: list[Path] = []
+    for wav in stems_dir.parent.rglob("*.wav"):
+        if stems_dir.name in wav.parts:
+            produced_files.append(wav)
+
+    if not produced_files:
+        raise RuntimeError(
+            "demucs did not produce stems.\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+    stems_dir.mkdir(parents=True, exist_ok=True)
+    for wav in produced_files:
+        dest = stems_dir / wav.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(wav), dest)
+
+    # Clean up empty model directories left behind by demucs.
+    for model_dir in stems_dir.parent.iterdir():
+        if model_dir == stems_dir or not model_dir.is_dir():
+            continue
+        try:
+            next(model_dir.rglob("*"))
+        except StopIteration:
+            shutil.rmtree(model_dir, ignore_errors=True)
+        else:
+            if not any(model_dir.rglob("*.wav")):
+                shutil.rmtree(model_dir, ignore_errors=True)
+
+    if not _stems_exist(stems_dir):
+        raise RuntimeError(
+            "demucs did not leave stems in the expected location."
+        )
+
+
+def _stems_exist(stems_dir: Path) -> bool:
+    return stems_dir.exists() and any(stems_dir.glob("*.wav"))
 
 

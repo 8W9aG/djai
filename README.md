@@ -17,7 +17,7 @@ Key flags:
 - `--limit`: Batch size per API call (max 50; defaults to 50).
 - `--max-items`: Optional cap on total tracks to fetch.
 
-The CLI calls Spotify's `/v1/me/tracks` endpoint, caches responses, downloads MP3 previews via [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (requires `ffmpeg`), falling back to a YouTube search when Spotify doesn't expose a preview URL, and prints the total number of liked tracks retrieved.
+The CLI calls Spotify's `/v1/me/tracks` endpoint, caches responses, downloads MP3 previews via [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (requires `ffmpeg`), falls back to a YouTube search when Spotify doesn't expose a preview URL, and runs [`demucs`](https://github.com/facebookresearch/demucs) to separate stems (cached under `.djai_cache/stems`). Demucs also needs the [`diffq`](https://pypi.org/project/diffq/) package; install it alongside Demucs. The command prints the total number of liked tracks retrieved.
 
 ### `.env` Support
 

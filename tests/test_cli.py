@@ -121,6 +121,7 @@ def test_cli_auto_authorizes_when_missing_token(
             "refresh_token": "ref-token",
         },
     )
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
 
     exit_code = cli.main(["--compact"])
 
@@ -156,6 +157,7 @@ def test_cli_uses_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         return payload
 
     monkeypatch.setattr(cli, "fetch_liked_tracks", fake_fetch)
+    monkeypatch.setattr(cli, "_download_audio_previews", lambda *a, **k: 0)
 
     # First run populates cache.
     cli.main(["--compact", "--max-items", "1"])
@@ -195,6 +197,7 @@ def test_cli_downloads_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     )
 
     downloads: list[dict[str, Any]] = []
+    separated: list[tuple[Path, Path]] = []
 
     class FakeYoutubeDL:
         def __init__(self, params: dict[str, Any]) -> None:
@@ -209,9 +212,17 @@ def test_cli_downloads_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
         def download(self, urls: list[str]) -> None:
             downloads[-1]["urls"] = urls
-            Path(self.params["outtmpl"]).write_bytes(b"mp3")
+            Path(str(self.params["outtmpl"]) + ".mp3").write_bytes(b"mp3")
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    def fake_separate(audio: Path, stems: Path) -> None:
+        separated.append((audio, stems))
+        stems.mkdir(parents=True, exist_ok=True)
+        (stems / "vocals.wav").write_bytes(b"vocals")
+        (stems / "other.wav").write_bytes(b"other")
+
+    monkeypatch.setattr(cli, "_separate_audio_sources", fake_separate)
 
     exit_code = cli.main([])
 
@@ -219,6 +230,7 @@ def test_cli_downloads_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert downloads[0]["urls"] == ["https://example.com/audio.mp3"]
     audio_file = tmp_path / ".djai_cache" / "audio" / "track1.mp3"
     assert audio_file.exists()
+    assert separated
 
 
 def test_cli_downloads_audio_via_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -244,6 +256,7 @@ def test_cli_downloads_audio_via_search(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
 
     downloads: list[dict[str, Any]] = []
+    separated: list[tuple[Path, Path]] = []
 
     class FakeYoutubeDL:
         def __init__(self, params: dict[str, Any]) -> None:
@@ -258,9 +271,17 @@ def test_cli_downloads_audio_via_search(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
         def download(self, urls: list[str]) -> None:
             downloads[-1]["urls"] = urls
-            Path(self.params["outtmpl"]).write_bytes(b"mp3")
+            Path(str(self.params["outtmpl"]) + ".mp3").write_bytes(b"mp3")
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    def fake_separate(audio: Path, stems: Path) -> None:
+        separated.append((audio, stems))
+        stems.mkdir(parents=True, exist_ok=True)
+        (stems / "vocals.wav").write_bytes(b"vocals")
+        (stems / "other.wav").write_bytes(b"other")
+
+    monkeypatch.setattr(cli, "_separate_audio_sources", fake_separate)
 
     exit_code = cli.main([])
 
@@ -268,3 +289,50 @@ def test_cli_downloads_audio_via_search(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert downloads[0]["urls"] == ["ytsearch1:Diane Young Vampire Weekend"]
     audio_file = tmp_path / ".djai_cache" / "audio" / "track2.mp3"
     assert audio_file.exists()
+    assert separated
+
+
+def test_separate_audio_sources_moves_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import types
+
+    audio_dir = tmp_path / ".djai_cache" / "audio"
+    audio_dir.mkdir(parents=True)
+    audio_file = audio_dir / "track.mp3"
+    audio_file.write_bytes(b"audio")
+
+    stems_dir = tmp_path / ".djai_cache" / "stems" / "track"
+
+    monkeypatch.setitem(sys.modules, "diffq", types.SimpleNamespace())
+
+    def fake_run(cmd, *, capture_output, text, check, cwd):
+        assert Path(cwd) == audio_dir
+        out_root = Path(cmd[cmd.index("--out") + 1])
+        model_dir = out_root / "mdx_extra_q" / stems_dir.name
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "vocals.wav").write_bytes(b"vocals")
+        (model_dir / "other.wav").write_bytes(b"other")
+        return types.SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli._separate_audio_sources(audio_file, stems_dir)
+
+    assert (stems_dir / "vocals.wav").exists()
+    assert (stems_dir / "other.wav").exists()
+    assert not (stems_dir.parent / "mdx_extra_q").exists()
+
+
+def test_ensure_audio_file_renames_double_extension(tmp_path: Path) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    original = audio_dir / "track.mp3.mp3"
+    original.write_bytes(b"mp3")
+
+    resolved = cli._ensure_audio_file(audio_dir, "track")
+
+    assert resolved == audio_dir / "track.mp3"
+    assert resolved.exists()
+    assert not original.exists()
